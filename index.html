@@ -2061,19 +2061,23 @@
         }
 
         const CHALLENGE_STORAGE_KEY = 'JLPT_CHALLENGE_PLAN_V1';
-        let challengeState = { version:2, duration:30, selectedDay:1, completed:{}, checked:{} };
+        let challengeState = { version:3, duration:30, selectedDay:1, completed:{}, checked:{}, wordPoolIds:MASTER_VOCAB.map(word => word.id) };
         let challengeRevealMap = {};
 
         function normalizeChallengeState(value) {
             const rawDuration = Number(value && value.duration);
             const duration = Number.isInteger(rawDuration) && rawDuration >= 10 && rawDuration <= 100 && rawDuration % 10 === 0 ? rawDuration : 30;
             const rawDay = Number(value && value.selectedDay);
+            const hasPool = value && Array.isArray(value.wordPoolIds);
+            const validPool = hasPool ? value.wordPoolIds.filter(id => MASTER_VOCAB.some(word => word.id === id)) : MASTER_VOCAB.map(word => word.id);
+            const compatible = value && (value.version === 2 || value.version === 3);
             return {
-                version:2,
+                version:3,
                 duration,
                 selectedDay: Number.isInteger(rawDay) ? Math.min(duration, Math.max(1, rawDay)) : 1,
-                completed: value && value.version === 2 && value.completed && typeof value.completed === 'object' ? value.completed : {},
-                checked: value && value.version === 2 && value.checked && typeof value.checked === 'object' ? value.checked : {}
+                completed: compatible && value.completed && typeof value.completed === 'object' ? value.completed : {},
+                checked: compatible && value.checked && typeof value.checked === 'object' ? value.checked : {},
+                wordPoolIds: validPool
             };
         }
 
@@ -2097,9 +2101,22 @@
 
         function buildChallengePlan(duration) {
             const plan = Array.from({length: duration}, (_, index) => ({day:index + 1, words:[], grammar:[]}));
-            MASTER_VOCAB.forEach((item, index) => {
-                const dayIndex = Math.min(duration - 1, Math.floor(index * duration / MASTER_VOCAB.length));
+            const wordById = new Map(MASTER_VOCAB.map(word => [word.id, word]));
+            const poolIds = Array.isArray(challengeState.wordPoolIds) ? challengeState.wordPoolIds : MASTER_VOCAB.map(word => word.id);
+            const assignedIds = new Set();
+            poolIds.forEach((id, index) => {
+                const item = wordById.get(id);
+                if (!item) return;
+                assignedIds.add(id);
+                const dayIndex = Math.min(duration - 1, Math.floor(index * duration / Math.max(1, poolIds.length)));
                 if (getComputedWordStatus(item.id) !== '암기 완료') plan[dayIndex].words.push(item);
+            });
+            // If a previously completed word is later reopened, place it on its stable original day
+            // without moving the other words in the current plan.
+            MASTER_VOCAB.forEach((item, index) => {
+                if (assignedIds.has(item.id) || getComputedWordStatus(item.id) === '암기 완료') return;
+                const dayIndex = Math.min(duration - 1, Math.floor(index * duration / MASTER_VOCAB.length));
+                plan[dayIndex].words.push(item);
             });
             GRAMMAR_DATA.forEach((item, index) => {
                 const dayIndex = Math.min(duration - 1, Math.floor(index * duration / GRAMMAR_DATA.length));
@@ -2116,7 +2133,15 @@
             const duration = Number(value);
             if (!Number.isInteger(duration) || duration < 10 || duration > 100 || duration % 10 !== 0) return;
             if (duration !== challengeState.duration) {
-                challengeState = {version:2, duration, selectedDay:1, completed:{}, checked:{}};
+                challengeState = {
+                    version:3,
+                    duration,
+                    selectedDay:1,
+                    completed:{},
+                    checked:{},
+                    // Freeze the pool for this plan. Changing word statuses won't reshuffle other days.
+                    wordPoolIds:MASTER_VOCAB.filter(word => getComputedWordStatus(word.id) !== '암기 완료').map(word => word.id)
+                };
                 saveChallengeState();
                 showToast('기간에 맞춰 어휘와 문법을 다시 배분했습니다. 진행 체크는 새 계획으로 초기화했습니다.', 'info');
             }
@@ -2166,8 +2191,8 @@
             const completedCount = Object.keys(challengeState.completed).filter(key => challengeState.completed[key] && Number(key) <= challengeState.duration).length;
             document.getElementById('challenge-progress-text').textContent = completedCount + ' / ' + challengeState.duration + '일';
             document.getElementById('challenge-progress-bar').style.width = (completedCount / challengeState.duration * 100) + '%';
-            const totalWords = MASTER_VOCAB.filter(word => getComputedWordStatus(word.id) !== '암기 완료').length;
-            document.getElementById('challenge-plan-summary').textContent = '미암기 어휘 ' + totalWords.toLocaleString() + '개와 문법 ' + GRAMMAR_DATA.length + '개를 ' + challengeState.duration + '일에 배분합니다. 암기 완료 단어는 제외됩니다.';
+            const totalWords = plan.reduce((total, dayPlan) => total + dayPlan.words.length, 0);
+            document.getElementById('challenge-plan-summary').textContent = '미암기 어휘 ' + totalWords.toLocaleString() + '개와 문법 ' + GRAMMAR_DATA.length + '개를 ' + challengeState.duration + '일에 배분합니다. 기간을 바꾸면 현재 미암기 어휘로 다시 배분합니다.';
             dayGrid.innerHTML = plan.map(day => {
                 const active = day.day === selectedDay;
                 const done = !!challengeState.completed[String(day.day)];
