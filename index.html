@@ -148,6 +148,12 @@
                         <i class="fa-solid fa-eye-slash text-sky-400"></i>
                         <span class="hidden md:inline">한국어 뜻</span> 가리기
                     </button>
+                    <button type="button" onclick="openCloudAuth()" id="cloud-account-button" class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-700 hover:bg-indigo-600 text-white border border-indigo-600 transition flex items-center gap-1.5" title="계정으로 학습 기록 동기화">
+                        <i class="fa-solid fa-user"></i><span>계정 로그인</span>
+                    </button>
+                    <button type="button" onclick="saveAllData()" class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-600 transition flex items-center gap-1.5" title="학습 기록을 이 기기에 저장">
+                        <i class="fa-solid fa-floppy-disk"></i><span>저장</span>
+                    </button>
                     <!-- Options Menu -->
                     <div class="relative inline-block text-left">
                         <button onclick="toggleDataMenu()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
@@ -213,6 +219,23 @@
             </div>
         </div>
     </header>
+
+    <div id="cloud-auth-modal" class="hidden fixed inset-0 z-[60] bg-slate-950/60 p-4 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="cloud-auth-title">
+        <div class="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <div class="flex items-start justify-between gap-3">
+                <div><h2 id="cloud-auth-title" class="text-lg font-bold text-slate-900">개인 학습 기록 동기화</h2><p class="mt-1 text-xs leading-relaxed text-slate-600">같은 계정으로 로그인하면 모바일과 PC에서 개인 기록을 이어서 사용할 수 있습니다.</p></div>
+                <button type="button" onclick="closeCloudAuth()" class="rounded-lg px-2 py-1 text-slate-500 hover:bg-slate-100" aria-label="닫기">✕</button>
+            </div>
+            <form class="mt-4 space-y-3" onsubmit="cloudSignIn(event)">
+                <label class="block text-xs font-semibold text-slate-700">이메일<input id="cloud-email" type="email" autocomplete="username" required class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm"></label>
+                <label class="block text-xs font-semibold text-slate-700">비밀번호<input id="cloud-password" type="password" autocomplete="current-password" minlength="8" required class="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm"></label>
+                <p id="cloud-auth-message" class="min-h-5 text-xs text-slate-500" aria-live="polite">계정 설정 후 이메일과 비밀번호로 가입하거나 로그인하세요.</p>
+                <div class="grid grid-cols-2 gap-2"><button type="submit" class="rounded-xl bg-indigo-700 px-3 py-2.5 text-sm font-bold text-white hover:bg-indigo-600">로그인</button><button type="button" onclick="cloudSignUp()" class="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-sm font-bold text-indigo-800 hover:bg-indigo-100">새 계정 가입</button></div>
+            </form>
+            <button id="cloud-logout-button" type="button" onclick="cloudSignOut()" class="hidden mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">로그아웃</button>
+            <p class="mt-3 text-[11px] leading-relaxed text-slate-400">현재 브라우저 자동 저장은 계속됩니다. 계정 동기화는 설정된 클라우드 프로젝트에 저장되며, JSON 백업도 함께 사용할 수 있습니다.</p>
+        </div>
+    </div>
 
     <!-- Main Content Container -->
     <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -460,6 +483,7 @@
                 <div class="flex items-center gap-2">
                     <label class="font-bold text-slate-700">대상 풀:</label>
                     <select id="card-level-select" onchange="initFlashcardSession()" class="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+                        <option value="TARGET" selected>추가 복습 대상 (암기 완료 제외)</option>
                         <option id="pool-all-count" value="ALL">N5 + N4 전체</option>
                         <option id="pool-n5-count" value="N5">JLPT N5</option>
                         <option id="pool-n4-count" value="N4">JLPT N4</option>
@@ -911,6 +935,16 @@
         // 2. STATE MANAGEMENT & LOCALSTORAGE
         // ==========================================
         const STORAGE_KEY = "JLPT_VOCAB_MASTER_STATE_V3";
+        // Supabase project values: use the project's URL and publishable/anon key (never a service_role key).
+        const SUPABASE_URL = "https://YOUR_PROJECT.supabase.co";
+        const SUPABASE_ANON_KEY = "YOUR_SUPABASE_PUBLISHABLE_OR_ANON_KEY";
+        const CLOUD_SESSION_KEY = "JLPT_CLOUD_SESSION_V1";
+        let cloudUser = null;
+        let cloudAccessToken = null;
+        let cloudRefreshToken = null;
+        let cloudSyncReady = false;
+        let cloudHydrating = false;
+        let cloudSyncTimer = null;
 
         let appState = {
             activeTab: "dashboard", 
@@ -980,6 +1014,7 @@
                 console.error("Failed to save user state:", e);
             }
             updateBadgesAndStats();
+            queueCloudSave();
         }
 
         // Keep another open copy of this file in sync with the same browser storage.
@@ -998,6 +1033,7 @@
                 updateBadgesAndStats();
                 if (['n5','n4','meaning-review','reading-review'].includes(appState.activeTab)) renderTable();
                 if (appState.activeTab === 'flashcards') initFlashcardSession();
+                if (appState.activeTab === 'challenge') renderChallenge();
             } catch (error) {
                 console.error('학습 기록 동기화 실패:', error);
             }
@@ -1336,7 +1372,7 @@
                             </span>
                         </td>
                         <td class="py-3 px-3 text-center">
-                            <button onclick="speakWord('${word.kanji}')" class="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-brand-600 transition inline-flex items-center justify-center" title="일본어 발음 듣기">
+                            <button onclick="speakWord('${word.reading || word.kanji}')" class="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-brand-600 transition inline-flex items-center justify-center" title="일본어 발음 듣기">
                                 <i class="fa-solid fa-volume-high text-xs"></i>
                             </button>
                         </td>
@@ -1412,20 +1448,35 @@
             }
         }
 
-        function changeWordStatus(wordId, newStatus) {
+        function refreshStatusDependentViews(changedWordId, advanceFlashcard = false) {
+            if (appState.activeTab === 'challenge') {
+                renderChallenge();
+                saveChallengeState();
+            }
+            if (appState.activeTab === 'flashcards') {
+                const oldList = appState.flashcardList || [];
+                const oldIndex = appState.flashcardIndex || 0;
+                const current = oldList[oldIndex];
+                const next = advanceFlashcard && oldList.length ? oldList[(oldIndex + 1) % oldList.length] : current;
+                initFlashcardSession();
+                let nextIndex = next ? appState.flashcardList.findIndex(word => word.id === next.id) : -1;
+                if (nextIndex < 0 && current && current.id !== changedWordId) nextIndex = appState.flashcardList.findIndex(word => word.id === current.id);
+                appState.flashcardIndex = nextIndex >= 0 ? nextIndex : 0;
+                renderFlashcard();
+            }
+        }
+
+        function changeWordStatus(wordId, newStatus, advanceFlashcard = false) {
             appState.wordStatusMap[wordId] = newStatus;
             appState.memorizedMap[wordId] = newStatus === '암기 완료';
             saveState();
-            renderTable();
+            if (['n5','n4','meaning-review','reading-review'].includes(appState.activeTab)) renderTable();
+            refreshStatusDependentViews(wordId, advanceFlashcard);
             showToast('단어 상태가 ' + newStatus + '(으)로 변경되었습니다.', 'info');
         }
 
         function toggleWordMemorized(wordId, isChecked) {
-            appState.memorizedMap[wordId] = isChecked;
-            appState.wordStatusMap[wordId] = isChecked ? '암기 완료' : '모르는 단어';
-            saveState();
-            renderTable();
-            showToast(isChecked ? '암기 완료로 기록했습니다.' : '암기 완료 표시를 해제했습니다.', isChecked ? 'success' : 'info');
+            changeWordStatus(wordId, isChecked ? '암기 완료' : '모르는 단어');
         }
 
         function handleTableSearch() {
@@ -1448,7 +1499,9 @@
             const levelSelect = document.getElementById('card-level-select').value;
             let list = [...MASTER_VOCAB];
 
-            if (levelSelect === 'N5') {
+            if (levelSelect === 'TARGET') {
+                list = list.filter(w => getComputedWordStatus(w.id) !== '암기 완료');
+            } else if (levelSelect === 'N5') {
                 list = list.filter(w => w.level === 'N5');
             } else if (levelSelect === 'N4') {
                 list = list.filter(w => w.level === 'N4');
@@ -1464,6 +1517,8 @@
                 });
             }
 
+            // Memorized words stay out of every flashcard pool, including level and review pools.
+            list = list.filter(w => getComputedWordStatus(w.id) !== '암기 완료');
             appState.flashcardList = list;
             appState.flashcardIndex = 0;
             appState.flashcardFlipped = false;
@@ -1539,8 +1594,7 @@
         function assessCard(newStatus) {
             if (!appState.flashcardList || appState.flashcardList.length === 0) return;
             const word = appState.flashcardList[appState.flashcardIndex];
-            changeWordStatus(word.id, newStatus);
-            nextCard();
+            changeWordStatus(word.id, newStatus, true);
         }
 
         function speakCurrentCard() {
@@ -1603,7 +1657,223 @@
             }
         });
 
+        function saveAllData() {
+            try {
+                const vocabPayload = {
+                    version: "4.0",
+                    savedAt: new Date().toISOString(),
+                    wordStatusMap: appState.wordStatusMap,
+                    memorizedMap: appState.memorizedMap,
+                    globalMaskReading: appState.globalMaskReading,
+                    globalMaskMeaning: appState.globalMaskMeaning
+                };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(vocabPayload));
+                localStorage.setItem(CHALLENGE_STORAGE_KEY, JSON.stringify(challengeState));
+                queueCloudSave();
+                updateBadgesAndStats();
+                showToast("어휘·암기 상태와 도전 진행을 이 기기에 저장했습니다. 다른 기기에서도 사용하려면 메뉴에서 JSON 백업을 내려받으세요.", "success");
+            } catch (e) {
+                console.error("Failed to save all user data:", e);
+                showToast("저장에 실패했습니다. 메뉴에서 JSON 백업을 시도해 주세요.", "error");
+            }
+        }
+
+        function cloudConfigured() {
+            return /^https:\/\//.test(SUPABASE_URL) && !SUPABASE_URL.includes("YOUR_PROJECT") && !!SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.includes("YOUR_SUPABASE");
+        }
+
+        function setCloudAuthMessage(message, isError = false) {
+            const el = document.getElementById("cloud-auth-message");
+            if (el) {
+                el.textContent = message;
+                el.className = "min-h-5 text-xs " + (isError ? "text-rose-600" : "text-slate-500");
+            }
+        }
+
+        function updateCloudAccountButton() {
+            const button = document.getElementById("cloud-account-button");
+            const logout = document.getElementById("cloud-logout-button");
+            if (button) button.innerHTML = cloudUser
+                ? '<i class="fa-solid fa-cloud-arrow-up"></i><span>' + escapeChallengeText(cloudUser.email || "동기화 중") + '</span>'
+                : '<i class="fa-solid fa-user"></i><span>계정 로그인</span>';
+            if (logout) logout.classList.toggle("hidden", !cloudUser);
+        }
+
+        function openCloudAuth() {
+            const modal = document.getElementById("cloud-auth-modal");
+            if (modal) modal.classList.remove("hidden");
+            updateCloudAccountButton();
+            if (!cloudConfigured()) setCloudAuthMessage("클라우드 연결 설정이 필요합니다. SQL 설정 파일의 안내에 따라 프로젝트 URL과 공개 키를 HTML에 입력하세요.", true);
+            else if (cloudUser) setCloudAuthMessage("로그인됨: " + cloudUser.email + " · 이 계정의 학습 기록을 동기화합니다.");
+            else setCloudAuthMessage("계정이 없으면 새 계정 가입을 선택하세요.");
+        }
+
+        function closeCloudAuth() {
+            const modal = document.getElementById("cloud-auth-modal");
+            if (modal) modal.classList.add("hidden");
+        }
+
+        function persistCloudSession(session) {
+            cloudAccessToken = session && session.access_token || null;
+            cloudRefreshToken = session && session.refresh_token || null;
+            cloudUser = session && session.user || null;
+            try {
+                if (cloudAccessToken && cloudRefreshToken && cloudUser) localStorage.setItem(CLOUD_SESSION_KEY, JSON.stringify({access_token:cloudAccessToken, refresh_token:cloudRefreshToken, user:cloudUser}));
+                else localStorage.removeItem(CLOUD_SESSION_KEY);
+            } catch (error) { console.warn("클라우드 로그인 정보를 브라우저에 저장하지 못했습니다.", error); }
+            updateCloudAccountButton();
+        }
+
+        async function refreshCloudSession() {
+            if (!cloudRefreshToken) throw new Error("로그인이 만료되었습니다. 다시 로그인해 주세요.");
+            const response = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=refresh_token", {
+                method:"POST", headers:{"Content-Type":"application/json", apikey:SUPABASE_ANON_KEY},
+                body:JSON.stringify({refresh_token:cloudRefreshToken})
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.access_token) {
+                persistCloudSession(null);
+                throw new Error(data.msg || data.message || "로그인이 만료되었습니다. 다시 로그인해 주세요.");
+            }
+            persistCloudSession(data);
+        }
+
+        async function cloudRequest(path, options = {}, allowRefresh = true) {
+            if (!cloudConfigured()) throw new Error("클라우드 연결 설정이 아직 완료되지 않았습니다.");
+            const authHeaders = cloudAccessToken ? {Authorization:"Bearer " + cloudAccessToken} : {};
+            const headers = Object.assign({apikey:SUPABASE_ANON_KEY}, authHeaders, options.headers || {});
+            if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+            const response = await fetch(SUPABASE_URL + path, Object.assign({}, options, {headers}));
+            if (response.status === 401 && allowRefresh && cloudRefreshToken) {
+                await refreshCloudSession();
+                return cloudRequest(path, options, false);
+            }
+            const data = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(data && (data.message || data.msg || data.error_description || data.error) || "클라우드 요청에 실패했습니다.");
+            return data;
+        }
+
+        function currentCloudPayload() {
+            return {
+                version:1,
+                vocabulary:{wordStatusMap:appState.wordStatusMap, memorizedMap:appState.memorizedMap, globalMaskReading:appState.globalMaskReading, globalMaskMeaning:appState.globalMaskMeaning},
+                challengeState:challengeState
+            };
+        }
+
+        function queueCloudSave() {
+            if (!cloudUser || !cloudSyncReady || cloudHydrating) return;
+            clearTimeout(cloudSyncTimer);
+            cloudSyncTimer = setTimeout(async () => {
+                try {
+                    await cloudRequest("/rest/v1/jlpt_user_data?on_conflict=user_id", {
+                        method:"POST", headers:{Prefer:"resolution=merge-duplicates,return=minimal"},
+                        body:JSON.stringify({user_id:cloudUser.id, payload:currentCloudPayload(), updated_at:new Date().toISOString()})
+                    });
+                    setCloudAuthMessage("클라우드에 저장됨 · " + new Date().toLocaleTimeString());
+                } catch (error) {
+                    console.error("클라우드 동기화 실패:", error);
+                    setCloudAuthMessage("클라우드 저장에 실패했습니다: " + error.message, true);
+                }
+            }, 700);
+        }
+
+        async function loadCloudUserData() {
+            cloudSyncReady = false;
+            cloudHydrating = true;
+            let shouldUploadLocal = false;
+            try {
+                const rows = await cloudRequest("/rest/v1/jlpt_user_data?select=payload&user_id=eq." + encodeURIComponent(cloudUser.id));
+                const payload = rows && rows[0] && rows[0].payload;
+                if (payload && payload.vocabulary) {
+                    appState.wordStatusMap = payload.vocabulary.wordStatusMap || {};
+                    appState.memorizedMap = payload.vocabulary.memorizedMap || {};
+                    appState.globalMaskReading = !!payload.vocabulary.globalMaskReading;
+                    appState.globalMaskMeaning = !!payload.vocabulary.globalMaskMeaning;
+                    Object.keys(appState.wordStatusMap).forEach(id => {
+                        if (appState.wordStatusMap[id] === "모두 아는 단어" || appState.memorizedMap[id]) {
+                            appState.wordStatusMap[id] = "암기 완료";
+                            appState.memorizedMap[id] = true;
+                        }
+                    });
+                    if (payload.challengeState) challengeState = normalizeChallengeState(payload.challengeState);
+                    saveState();
+                    saveChallengeState();
+                    updateGlobalMaskButtons();
+                    updateBadgesAndStats();
+                    if (["n5","n4","meaning-review","reading-review"].includes(appState.activeTab)) renderTable();
+                    if (appState.activeTab === "challenge") renderChallenge();
+                    if (appState.activeTab === "flashcards") initFlashcardSession();
+                    setCloudAuthMessage("이 계정의 학습 기록을 불러왔습니다.");
+                } else {
+                    shouldUploadLocal = true;
+                    setCloudAuthMessage("클라우드에 저장된 기록이 없어 현재 기기 기록을 계정에 저장합니다.");
+                }
+            } finally {
+                cloudHydrating = false;
+                cloudSyncReady = true;
+                if (shouldUploadLocal) queueCloudSave();
+            }
+        }
+
+        async function finishCloudSignIn(session) {
+            persistCloudSession(session);
+            await loadCloudUserData();
+            closeCloudAuth();
+            showToast("" + cloudUser.email + " 계정으로 학습 기록을 동기화합니다.", "success");
+        }
+
+        async function cloudSignIn(event) {
+            if (event) event.preventDefault();
+            if (!cloudConfigured()) { setCloudAuthMessage("클라우드 프로젝트 설정값을 먼저 입력해야 합니다.", true); return; }
+            const email = document.getElementById("cloud-email").value.trim();
+            const password = document.getElementById("cloud-password").value;
+            setCloudAuthMessage("로그인 중…");
+            try {
+                const session = await cloudRequest("/auth/v1/token?grant_type=password", {method:"POST", body:JSON.stringify({email, password})});
+                await finishCloudSignIn(session);
+            } catch (error) { setCloudAuthMessage(error.message, true); }
+        }
+
+        async function cloudSignUp() {
+            if (!cloudConfigured()) { setCloudAuthMessage("클라우드 프로젝트 설정값을 먼저 입력해야 합니다.", true); return; }
+            const email = document.getElementById("cloud-email").value.trim();
+            const password = document.getElementById("cloud-password").value;
+            if (!email || password.length < 8) { setCloudAuthMessage("이메일과 8자 이상의 비밀번호를 입력해 주세요.", true); return; }
+            setCloudAuthMessage("계정을 만드는 중…");
+            try {
+                const result = await cloudRequest("/auth/v1/signup", {method:"POST", body:JSON.stringify({email, password})});
+                if (result && result.access_token) await finishCloudSignIn(result);
+                else setCloudAuthMessage("가입 요청을 완료했습니다. 이메일 인증을 마친 뒤 로그인해 주세요.");
+            } catch (error) { setCloudAuthMessage(error.message, true); }
+        }
+
+        async function cloudSignOut() {
+            try { if (cloudAccessToken) await cloudRequest("/auth/v1/logout", {method:"POST"}); } catch (error) { console.warn("로그아웃 처리:", error); }
+            persistCloudSession(null);
+            cloudSyncReady = false;
+            clearTimeout(cloudSyncTimer);
+            setCloudAuthMessage("로그아웃했습니다. 이 브라우저의 로컬 기록은 유지됩니다.");
+            showToast("클라우드 계정에서 로그아웃했습니다.", "info");
+        }
+
+        async function restoreCloudSession() {
+            if (!cloudConfigured()) return;
+            try {
+                const saved = localStorage.getItem(CLOUD_SESSION_KEY);
+                if (!saved) return;
+                const session = JSON.parse(saved);
+                persistCloudSession(session);
+                if (!cloudUser || !cloudAccessToken) return;
+                await loadCloudUserData();
+            } catch (error) {
+                console.warn("저장된 클라우드 세션을 복구하지 못했습니다.", error);
+                setCloudAuthMessage(error.message, true);
+            }
+        }
+
         function exportUserData() {
+            saveAllData();
             const payload = {
                 version: "4.0",
                 exportedAt: new Date().toISOString(),
@@ -1822,13 +2092,14 @@
             } catch (error) {
                 console.warn('도전 계획을 저장하지 못했습니다.', error);
             }
+            queueCloudSave();
         }
 
         function buildChallengePlan(duration) {
             const plan = Array.from({length: duration}, (_, index) => ({day:index + 1, words:[], grammar:[]}));
             MASTER_VOCAB.forEach((item, index) => {
                 const dayIndex = Math.min(duration - 1, Math.floor(index * duration / MASTER_VOCAB.length));
-                plan[dayIndex].words.push(item);
+                if (getComputedWordStatus(item.id) !== '암기 완료') plan[dayIndex].words.push(item);
             });
             GRAMMAR_DATA.forEach((item, index) => {
                 const dayIndex = Math.min(duration - 1, Math.floor(index * duration / GRAMMAR_DATA.length));
@@ -1887,11 +2158,16 @@
             const plan = buildChallengePlan(challengeState.duration);
             const selectedDay = Math.min(challengeState.duration, Math.max(1, challengeState.selectedDay));
             challengeState.selectedDay = selectedDay;
+            plan.forEach(dayPlan => {
+                const dayChecks = challengeState.checked[String(dayPlan.day)] || {};
+                const dayKeys = dayPlan.words.map(word => 'v:' + word.id).concat(dayPlan.grammar.map(item => 'g:' + item.challengeId));
+                challengeState.completed[String(dayPlan.day)] = dayKeys.length > 0 && dayKeys.every(key => !!dayChecks[key]);
+            });
             const completedCount = Object.keys(challengeState.completed).filter(key => challengeState.completed[key] && Number(key) <= challengeState.duration).length;
             document.getElementById('challenge-progress-text').textContent = completedCount + ' / ' + challengeState.duration + '일';
             document.getElementById('challenge-progress-bar').style.width = (completedCount / challengeState.duration * 100) + '%';
-            const totalWords = MASTER_VOCAB.length;
-            document.getElementById('challenge-plan-summary').textContent = '어휘 ' + totalWords.toLocaleString() + '개와 문법 ' + GRAMMAR_DATA.length + '개를 ' + challengeState.duration + '일에 균등 배분합니다.';
+            const totalWords = MASTER_VOCAB.filter(word => getComputedWordStatus(word.id) !== '암기 완료').length;
+            document.getElementById('challenge-plan-summary').textContent = '미암기 어휘 ' + totalWords.toLocaleString() + '개와 문법 ' + GRAMMAR_DATA.length + '개를 ' + challengeState.duration + '일에 배분합니다. 암기 완료 단어는 제외됩니다.';
             dayGrid.innerHTML = plan.map(day => {
                 const active = day.day === selectedDay;
                 const done = !!challengeState.completed[String(day.day)];
@@ -1911,7 +2187,10 @@
                 const wordDetails = revealed
                     ? '<div class="mt-1"><span class="font-jp text-xs text-slate-500">' + escapeChallengeText(word.reading) + '</span><span class="mx-1 text-slate-300">·</span><span class="text-xs text-slate-600">' + escapeChallengeText(word.meaning) + '</span></div>'
                     : '<div class="mt-1 text-[10px] text-slate-400">요미가나와 뜻이 가려져 있습니다</div>';
-                return '<li class="grid grid-cols-[1.25rem_2rem_minmax(5rem,0.8fr)_minmax(9rem,1.5fr)] gap-2 items-start py-2 border-b border-slate-100 last:border-0"><input type="checkbox" aria-label="' + escapeChallengeText(word.kanji) + ' 학습 완료" ' + (checked[key] ? 'checked' : '') + ' onchange="toggleChallengeItem(' + selectedDay + ',\'v\',\'' + escapeChallengeText(word.id) + '\',this.checked)" class="mt-0.5 w-4 h-4 accent-rose-600 cursor-pointer"><span class="text-[10px] text-slate-400">' + (index + 1) + '</span><strong class="font-jp text-sm text-slate-900">' + escapeChallengeText(word.kanji) + '</strong><div>' + revealButton + wordDetails + '</div></li>';
+                const wordStatus = getComputedWordStatus(word.id);
+                const statusOptions = ['모르는 단어','읽기 가능','뜻만 아는 단어','암기 완료'];
+                const statusSelect = '<select aria-label="' + escapeChallengeText(word.kanji) + ' 학습 상태" onchange="changeWordStatus(\'' + escapeChallengeText(word.id) + '\',this.value)" class="mt-2 max-w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600">' + statusOptions.map(status => '<option value="' + status + '" ' + (wordStatus === status ? 'selected' : '') + '>' + status + '</option>').join('') + '</select>';
+                return '<li class="grid grid-cols-[1.25rem_2rem_minmax(5rem,0.8fr)_minmax(9rem,1.5fr)] gap-2 items-start py-2 border-b border-slate-100 last:border-0"><input type="checkbox" aria-label="' + escapeChallengeText(word.kanji) + ' 학습 완료" ' + (checked[key] ? 'checked' : '') + ' onchange="toggleChallengeItem(' + selectedDay + ',\'v\',\'' + escapeChallengeText(word.id) + '\',this.checked)" class="mt-0.5 w-4 h-4 accent-rose-600 cursor-pointer"><span class="text-[10px] text-slate-400">' + (index + 1) + '</span><strong class="font-jp text-sm text-slate-900">' + escapeChallengeText(word.kanji) + '</strong><div>' + revealButton + wordDetails + statusSelect + '</div></li>';
             }).join('');
             const grammarHtml = day.grammar.length ? day.grammar.map(item => {
                 const key = 'g:' + item.challengeId;
@@ -1931,7 +2210,10 @@
             }
         });
 
-        window.addEventListener('DOMContentLoaded', initApp);
+        window.addEventListener('DOMContentLoaded', () => {
+            initApp();
+            restoreCloudSession();
+        });
     </script>
 </body>
 </html>
