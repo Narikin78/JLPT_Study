@@ -483,7 +483,8 @@
                 <div class="flex items-center gap-2">
                     <label class="font-bold text-slate-700">대상 풀:</label>
                     <select id="card-level-select" onchange="initFlashcardSession()" class="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
-                        <option value="TARGET" selected>추가 복습 대상 (암기 완료 제외)</option>
+                        <option value="CHALLENGE_DAY" selected>오늘의 도전 어휘</option>
+                        <option value="TARGET">추가 복습 대상 (전체 미암기)</option>
                         <option id="pool-all-count" value="ALL">N5 + N4 전체</option>
                         <option id="pool-n5-count" value="N5">JLPT N5</option>
                         <option id="pool-n4-count" value="N4">JLPT N4</option>
@@ -491,6 +492,9 @@
                         <option value="REVIEW_READING">읽을 줄 모름 대상</option>
                     </select>
                 </div>
+                <label class="flex items-center gap-2 font-bold text-slate-700">학습 일차:
+                    <select id="card-day-select" onchange="changeFlashcardDay(this.value)" class="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 font-normal"></select>
+                </label>
                 <div class="flex items-center gap-2">
                     <button onclick="shuffleFlashcards()" class="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium transition flex items-center gap-1">
                         <i class="fa-solid fa-shuffle"></i> 카드 섞기
@@ -503,13 +507,13 @@
 
             <!-- 3D Card Box -->
             <div class="perspective-1000 w-full h-80">
-                <div id="flashcard-element" onclick="flipCard()" class="transform-style-3d relative w-full h-full rounded-3xl bg-white border border-slate-200 shadow-xl cursor-pointer transition-transform duration-500 flex flex-col justify-between p-8 select-none">
+                <div id="flashcard-element" onclick="flipAndSpeakCurrentCard()" class="transform-style-3d relative w-full h-full rounded-3xl bg-white border border-slate-200 shadow-xl cursor-pointer transition-transform duration-500 flex flex-col justify-between p-8 select-none">
                     
                     <!-- Card Front -->
                     <div class="backface-hidden absolute inset-0 p-8 flex flex-col justify-between items-center text-center bg-white rounded-3xl">
                         <div class="w-full flex justify-between items-center text-xs text-slate-400">
                             <span id="card-front-level" class="px-2 py-0.5 rounded bg-slate-100 font-bold">N5</span>
-                            <span class="text-slate-400"><i class="fa-solid fa-rotate text-brand-500"></i> 클릭하여 뒤집기</span>
+                            <span class="text-slate-400"><i class="fa-solid fa-volume-high text-brand-500"></i> 클릭·터치하면 발음 재생 및 뒤집기</span>
                             <span id="card-front-pos" class="px-2 py-0.5 rounded bg-indigo-50 text-indigo-600 font-medium">명사</span>
                         </div>
                         <div class="my-auto">
@@ -517,7 +521,7 @@
                                 漢字
                             </h2>
                         </div>
-                        <p class="text-xs text-slate-400">발음과 뜻을 머릿속으로 맞춰보세요</p>
+                        <p class="text-xs text-slate-400">암기 완료로 표시하지 않은 카드는 한 바퀴 뒤 다시 나옵니다</p>
                     </div>
 
                     <!-- Card Back -->
@@ -1495,11 +1499,32 @@
         // ==========================================
         // 6. FLASHCARDS STUDY MODE
         // ==========================================
+        function refreshFlashcardDayOptions() {
+            const select = document.getElementById('card-day-select');
+            if (!select) return;
+            const duration = challengeState.duration;
+            const selectedDay = Math.min(duration, Math.max(1, Number(challengeState.selectedDay) || 1));
+            select.innerHTML = Array.from({length:duration}, (_, index) => '<option value="' + (index + 1) + '">' + (index + 1) + '일차</option>').join('');
+            select.value = String(selectedDay);
+        }
+
+        function changeFlashcardDay(day) {
+            const selectedDay = Number(day);
+            if (!Number.isInteger(selectedDay) || selectedDay < 1 || selectedDay > challengeState.duration) return;
+            challengeState.selectedDay = selectedDay;
+            saveChallengeState();
+            initFlashcardSession();
+        }
+
         function initFlashcardSession() {
+            refreshFlashcardDayOptions();
             const levelSelect = document.getElementById('card-level-select').value;
             let list = [...MASTER_VOCAB];
 
-            if (levelSelect === 'TARGET') {
+            if (levelSelect === 'CHALLENGE_DAY') {
+                const day = buildChallengePlan(challengeState.duration)[challengeState.selectedDay - 1];
+                list = day ? [...day.words] : [];
+            } else if (levelSelect === 'TARGET') {
                 list = list.filter(w => getComputedWordStatus(w.id) !== '암기 완료');
             } else if (levelSelect === 'N5') {
                 list = list.filter(w => w.level === 'N5');
@@ -1597,10 +1622,16 @@
             changeWordStatus(word.id, newStatus, true);
         }
 
+        function flipAndSpeakCurrentCard() {
+            if (!appState.flashcardList || appState.flashcardList.length === 0) return;
+            speakCurrentCard();
+            flipCard();
+        }
+
         function speakCurrentCard() {
             if (!appState.flashcardList || appState.flashcardList.length === 0) return;
             const word = appState.flashcardList[appState.flashcardIndex];
-            speakWord(word.kanji);
+            speakWord(word.reading || word.kanji);
         }
 
         function setupKeyboardShortcuts() {
